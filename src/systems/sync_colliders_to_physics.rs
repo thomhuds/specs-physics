@@ -1,8 +1,16 @@
 use std::marker::PhantomData;
 
 use specs::{
-    storage::ComponentEvent, world::Index, Join, ReadStorage, ReaderId, Resources, System,
-    SystemData, WriteExpect, WriteStorage,
+    storage::ComponentEvent,
+    world::Index,
+    Join,
+    ReadStorage,
+    ReaderId,
+    System,
+    SystemData,
+    World,
+    WriteExpect,
+    WriteStorage,
 };
 
 use crate::{
@@ -10,7 +18,8 @@ use crate::{
     colliders::PhysicsCollider,
     nalgebra::RealField,
     nphysics::object::{BodyPartHandle, ColliderDesc},
-    Physics, PhysicsParent,
+    Physics,
+    PhysicsParent,
 };
 
 use super::iterate_component_events;
@@ -56,7 +65,7 @@ where
         for (position, parent_entity, mut physics_collider, id) in (
             &positions,
             parent_entities.maybe(),
-            &mut physics_colliders,
+            &mut physics_colliders.restrict_mut(),
             &inserted_positions
                 | &inserted_physics_colliders
                 | &modified_physics_colliders
@@ -72,14 +81,14 @@ where
                     parent_entity,
                     &position,
                     &mut physics,
-                    &mut physics_collider,
+                    physics_collider.get_mut_unchecked(),
                 );
             }
 
             // handle modified events
             if modified_physics_colliders.contains(id) {
                 debug!("Modified PhysicsCollider with id: {}", id);
-                update_collider::<N, P>(id, &mut physics, &physics_collider);
+                update_collider::<N, P>(id, &mut physics, physics_collider.get_unchecked());
             }
 
             // handle removed events
@@ -88,9 +97,15 @@ where
                 remove_collider::<N, P>(id, &mut physics);
             }
         }
+
+        // Drain update triggers caused by inserts
+        let event_iter = physics_colliders
+            .channel()
+            .read(self.physics_colliders_reader_id.as_mut().unwrap());
+        for _ in event_iter {}
     }
 
-    fn setup(&mut self, res: &mut Resources) {
+    fn setup(&mut self, res: &mut World) {
         info!("SyncCollidersToPhysicsSystem.setup");
         Self::SystemData::setup(res);
 
@@ -245,11 +260,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use specs::{world::Builder, DispatcherBuilder, World};
+    use specs::prelude::*;
 
     use crate::{
-        colliders::Shape, nalgebra::Isometry3, systems::SyncCollidersToPhysicsSystem, Physics,
-        PhysicsColliderBuilder, SimplePosition,
+        colliders::Shape,
+        nalgebra::Isometry3,
+        systems::SyncCollidersToPhysicsSystem,
+        Physics,
+        PhysicsColliderBuilder,
+        SimplePosition,
     };
 
     #[test]
@@ -262,7 +281,7 @@ mod tests {
                 &[],
             )
             .build();
-        dispatcher.setup(&mut world.res);
+        dispatcher.setup(&mut world);
 
         // create an Entity with the PhysicsCollider component and execute the
         // dispatcher
@@ -273,7 +292,7 @@ mod tests {
             )))
             .with(PhysicsColliderBuilder::<f32>::from(Shape::Ball { radius: 5.0 }).build())
             .build();
-        dispatcher.dispatch(&mut world.res);
+        dispatcher.dispatch(&world);
 
         // fetch the Physics instance and check for new colliders
         let physics = world.read_resource::<Physics<f32>>();
